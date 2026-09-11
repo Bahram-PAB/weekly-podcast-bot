@@ -174,7 +174,7 @@ def build_source_text(selected_posts, channel_names=None, active_channels=0):
 # Generate podcast script — single presenter monologue
 # =============================================================================
 
-def generate_podcast_script(source_text, date_range, podcast_date, speaker_name):
+async def generate_podcast_script(source_text, date_range, podcast_date, speaker_name):
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         logger.error("GEMINI_API_KEY not set!")
@@ -231,13 +231,12 @@ def generate_podcast_script(source_text, date_range, podcast_date, speaker_name)
 """
 
     MAX_ROUNDS = 3
-    ROUND_WAIT = 3600
-    import time
+    ROUND_WAIT = 300  # 5 min between rounds (not 1 hour)
 
     for round_num in range(MAX_ROUNDS):
         if round_num > 0:
             logger.warning(f"All 5 attempts failed. Waiting {ROUND_WAIT}s before round {round_num+1}...")
-            time.sleep(ROUND_WAIT)
+            await asyncio.sleep(ROUND_WAIT)
 
         for attempt in range(5):
             try:
@@ -253,9 +252,9 @@ def generate_podcast_script(source_text, date_range, podcast_date, speaker_name)
                 logger.info(f"Script generated: {len(script)} chars, {len(script.splitlines())} lines")
                 return script
             except Exception as e:
-                wait = 120 + (60 * attempt)
-                logger.warning(f"Script attempt {attempt+1}/5 (round {round_num+1}) failed: {e}. Retry in {wait}s...")
-                time.sleep(wait)
+                wait = 30 + (30 * attempt)  # 30, 60, 90, 120, 150 seconds
+                logger.warning(f"Script attempt {attempt+1}/5 (round {round_num+1}) failed: {type(e).__name__}: {e}. Retry in {wait}s...")
+                await asyncio.sleep(wait)
 
     logger.error("Script generation failed after all rounds!")
     return None
@@ -480,7 +479,7 @@ async def async_main():
 
         # Step 4: Generate script
         logger.info("Generating podcast script...")
-        script = generate_podcast_script(source_text, date_range, podcast_date, speaker_name)
+        script = await generate_podcast_script(source_text, date_range, podcast_date, speaker_name)
         if not script:
             logger.error("Script generation failed!")
             return
