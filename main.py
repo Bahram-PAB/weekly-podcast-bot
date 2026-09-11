@@ -7,10 +7,10 @@ Deploy: alwaysdata Free plan.
 """
 
 import asyncio
+import io
 import json
 import os
 import re
-import subprocess
 import wave
 import yaml
 import logging
@@ -366,20 +366,38 @@ async def render_podcast_audio(script, output_wav, speaker_name, voice, correcti
 # WAV -> MP3 conversion (ffmpeg)
 # =============================================================================
 
-def wav_to_mp3(wav_path, mp3_path, bitrate="64k"):
+def wav_to_mp3(wav_path, mp3_path, bitrate=64):
+    """WAV -> MP3 using lameenc (pure Python, no ffmpeg needed)."""
+    import lameenc
     try:
-        subprocess.run(
-            ["ffmpeg", "-y", "-i", wav_path, "-b:a", bitrate, mp3_path],
-            check=True, capture_output=True, timeout=120,
-        )
+        encoder = lameenc.Encoder()
+        encoder.set_bit_rate(bitrate)
+        encoder.set_num_channels(1)
+        encoder.set_in_sample_rate(SAMPLE_RATE)
+        encoder.set_out_sample_rate(SAMPLE_RATE)
+
+        mp3_frames = bytearray()
+        with wave.open(wav_path, "rb") as wav:
+            chunk_size = 1152  # LAME works in 1152-sample frames
+            while True:
+                frames = wav.readframes(chunk_size)
+                if not frames:
+                    break
+                # lameenc expects bytes, returns encoded bytes
+                encoded = encoder.encode(frames)
+                mp3_frames.extend(encoded)
+            # Flush remaining
+            remaining = encoder.flush()
+            mp3_frames.extend(remaining)
+
+        with open(mp3_path, "wb") as f:
+            f.write(mp3_frames)
+
         mp3_size = os.path.getsize(mp3_path) / (1024 * 1024)
         logger.info(f"MP3 saved: {mp3_path} ({mp3_size:.1f}MB)")
         return True
-    except FileNotFoundError:
-        logger.error("ffmpeg not found! Install it: apt install ffmpeg")
-        return False
-    except subprocess.CalledProcessError as e:
-        logger.error(f"ffmpeg failed: {e.stderr.decode()[:200]}")
+    except Exception as e:
+        logger.error(f"MP3 conversion failed: {e}")
         return False
 
 
