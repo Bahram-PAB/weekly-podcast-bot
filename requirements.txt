@@ -1,0 +1,5 @@
+requests
+pyyaml
+telethon
+jdatetime
+google-genai
