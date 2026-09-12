@@ -503,12 +503,7 @@ async def async_main():
             logger.error("Audio generation failed!")
             return
 
-        # Step 6: WAV -> MP3
-        if not wav_to_mp3(wav_path, mp3_path):
-            logger.error("MP3 conversion failed!")
-            return
-
-        # Step 7: Send to Telegram
+        # Step 6: Send WAV directly to Telegram (lameenc may fail on CI)
         logger.info("Sending to Telegram...")
         title = f"پادکست هفتگی کوهنامه {podcast_date}"
         caption = (
@@ -520,13 +515,12 @@ async def async_main():
             f"📍 www.koohnameh.ir\n"
             f"📢 @koohnameh"
         )
-        send_to_telegram(mp3_path, title, caption)
+        send_to_telegram(wav_path, title, caption)
 
-        # Step 8: Cleanup — delete audio files
-        for f in [wav_path, mp3_path]:
-            if os.path.exists(f):
-                os.remove(f)
-                logger.info(f"Deleted: {f}")
+        # Step 7: Cleanup — delete audio file
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+            logger.info(f"Deleted: {wav_path}")
 
         logger.info("Done!")
 
