@@ -13,7 +13,6 @@ channels:
   - "@alpineclub_iran"
   - "@KoohGram"
   - "@mymountains"
-  - "@ch_envir_iran"
   - "@damavand_amoozesh"
   - "@irancanyon"
   - "@kolegardi"
@@ -34,7 +33,7 @@ channels:
   - "@iclimb"
   - "@Mountaineering_Club_of_Iran"
   - "@espilat"
-  - "@irankoohestan"
+  - "@irankoohestanclub"
   - "@koohnevisaneiran"
   - "@kouhyad"
   - "@TehranKouh"
@@ -73,7 +72,7 @@ channels:
   - "@mountainmeteorology"
   - "@hamgamangolestan"
   - "@garinkoh"
-
+  - "@sarakchal_alpine_club"
 # Filters
 filters:
   exclude_keywords:
