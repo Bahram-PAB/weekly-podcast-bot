@@ -446,7 +446,13 @@ async def async_main():
         return
 
     from telethon import TelegramClient
-    client = TelegramClient("user_session", api_id, api_hash)
+    from telethon.sessions import StringSession
+
+    session_str = os.environ.get("TELEGRAM_SESSION", "")
+    if session_str:
+        client = TelegramClient(StringSession(session_str), api_id, api_hash)
+    else:
+        client = TelegramClient("user_session", api_id, api_hash)
     await client.start()
     try:
         # Step 1: Fetch messages from last 7 days
