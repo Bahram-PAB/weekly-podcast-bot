@@ -462,11 +462,17 @@ def build_outro_text(speaker_name):
         f"و منتظر پادکست هفتگی بعدی باشید. تا دفعه بعد، خدا نگهدارتون باشه."
     )
 
-async def generate_tts_audio(text, output_wav, client, config):
+async def generate_tts_audio(text, output_wav, config):
     """Generate TTS audio for a single text block using Gemini Live API."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        logger.error("GEMINI_API_KEY not set!")
+        return False
+        
     speaker_name = config.get("speaker", {}).get("name", "فرشید")
     speaker_voice = config.get("speaker", {}).get("voice", "Charon")
     
+    client = genai.Client(api_key=api_key)
     live_config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         speech_config=types.SpeechConfig(
@@ -647,7 +653,7 @@ async def async_main():
         intro_music = get_random_music_file(INTRO_MUSIC_DIR)
 
         logger.info("Generating intro TTS...")
-        if await generate_tts_audio(intro_text, intro_tts_wav, client, config):
+        if await generate_tts_audio(intro_text, intro_tts_wav, config):
             logger.info(f"Mixing intro with music: {intro_music}")
             mix_audio_with_music(intro_tts_wav, intro_mixed_wav, intro_music, is_intro=True)
         else:
@@ -661,7 +667,7 @@ async def async_main():
         outro_music = get_random_music_file(OUTRO_MUSIC_DIR)
 
         logger.info("Generating outro TTS...")
-        if await generate_tts_audio(outro_text, outro_tts_wav, client, config):
+        if await generate_tts_audio(outro_text, outro_tts_wav, config):
             logger.info(f"Mixing outro with music: {outro_music}")
             mix_audio_with_music(outro_tts_wav, outro_mixed_wav, outro_music, is_intro=False)
         else:
