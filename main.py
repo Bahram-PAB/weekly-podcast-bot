@@ -10,6 +10,7 @@ import asyncio
 import io
 import json
 import os
+import random
 import re
 import wave
 import yaml
@@ -19,6 +20,7 @@ from datetime import datetime, timedelta
 import jdatetime
 from google import genai
 from google.genai import types
+from pydub import AudioSegment
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -428,6 +430,147 @@ def send_to_telegram(audio_path, title, caption):
 # Main
 # =============================================================================
 
+# =============================================================================
+# Intro/Outro Audio Generation & Music Mixing
+# =============================================================================
+
+INTRO_MUSIC_DIR = "assets/intro_music"
+OUTRO_MUSIC_DIR = "assets/outro_music"
+FADE_DURATION_MS = 2000  # 2 seconds fade in/out
+MUSIC_VOLUME_DB = -20    # Music 20dB lower than speech
+
+def get_random_music_file(music_dir):
+    """Get random music file from directory, or None if empty/missing."""
+    if not os.path.isdir(music_dir):
+        return None
+    files = [f for f in os.listdir(music_dir) if f.lower().endswith(('.mp3', '.wav', '.ogg', '.m4a'))]
+    if not files:
+        return None
+    return os.path.join(music_dir, random.choice(files))
+
+def build_intro_text(speaker_name, podcast_date, date_range):
+    return (
+        f"{speaker_name}: سلام و درود خدمت شنوندگان عزیز پادکست کوهنامه. "
+        f"امروز {podcast_date} هست و با یه خلاصه هفتگی از پربازدیدترین مطالب "
+        f"کانال‌های تلگرامی کوهنوردی در خدمتتون هستیم. {date_range} رو با هم مرور می‌کنیم."
+    )
+
+def build_outro_text(speaker_name):
+    return (
+        f"{speaker_name}: این بود خلاصه‌ی پربازدیدترین مطالب هفتگی کانال‌های کوهنوردی. "
+        f"امیدوارم براتون مفید بوده باشه. پادکست‌های ما رو با دوستان کوهنوردتون به اشتراک بگذارید "
+        f"و منتظر پادکست هفتگی بعدی باشید. تا دفعه بعد، خدا نگهدارتون باشه."
+    )
+
+async def generate_tts_audio(text, output_wav, client, config):
+    """Generate TTS audio for a single text block using Gemini Live API."""
+    speaker_name = config.get("speaker", {}).get("name", "فرشید")
+    speaker_voice = config.get("speaker", {}).get("voice", "Charon")
+    
+    live_config = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=speaker_voice)
+            )
+        ),
+        system_instruction=(
+            f"You are {speaker_name}. Speak in natural contemporary Iranian Persian. "
+            "Deliver the text as warm, natural human speech. "
+            "Say each sentence once at a comfortable pace."
+        ),
+        temperature=0.7,
+    )
+
+    async with client.aio.live.connect(model=LIVE_MODEL, config=live_config) as session:
+        prompt = (
+            "Perform only the exact text inside <READ>. Preserve every word, but deliver "
+            "it as warm, natural human speech with varied emphasis, comfortable phrasing, "
+            "and unhurried articulation. Say each sentence once. Stop immediately after the "
+            f"final word and produce only audible speech.\n\n<READ>\n{text}\n</READ>"
+        )
+        await session.send_client_content(
+            turns=[{"role": "user", "parts": [{"text": prompt}]}]
+        )
+
+        pcm = bytearray()
+        async for message in session.receive():
+            server_content = getattr(message, "server_content", None)
+            model_turn = getattr(server_content, "model_turn", None) if server_content else None
+            for part in getattr(model_turn, "parts", None) or []:
+                inline = getattr(part, "inline_data", None)
+                data = getattr(inline, "data", None) if inline else None
+                if data:
+                    pcm.extend(data)
+            if not pcm and getattr(message, "data", None):
+                pcm.extend(message.data)
+            if server_content and (
+                getattr(server_content, "turn_complete", False)
+                or getattr(server_content, "generation_complete", False)
+            ):
+                break
+
+    if not pcm:
+        logger.error("No audio generated for TTS")
+        return False
+
+    # Write WAV
+    with wave.open(output_wav, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(SAMPLE_RATE)
+        wav.writeframes(bytes(pcm))
+
+    logger.info(f"TTS WAV saved: {output_wav} ({len(pcm)/(SAMPLE_RATE*2):.1f}s)")
+    return True
+
+def mix_audio_with_music(speech_wav, output_wav, music_path, is_intro=True):
+    """Mix speech with background music with fade in/out."""
+    try:
+        speech = AudioSegment.from_wav(speech_wav)
+        
+        if not music_path or not os.path.exists(music_path):
+            # No music, just export speech
+            speech.export(output_wav, format="wav")
+            logger.info(f"No music file, exported speech only: {output_wav}")
+            return True
+
+        music = AudioSegment.from_file(music_path)
+        
+        # Adjust music volume
+        music = music + MUSIC_VOLUME_DB
+        
+        # Loop music if shorter than speech + fade
+        target_duration = len(speech) + FADE_DURATION_MS
+        if len(music) < target_duration:
+            loops = (target_duration // len(music)) + 1
+            music = music * loops
+        
+        # Trim music to target duration
+        music = music[:target_duration]
+        
+        # Apply fade in/out to music
+        music = music.fade_in(FADE_DURATION_MS).fade_out(FADE_DURATION_MS)
+        
+        # Overlay speech on music (speech starts after fade-in begins)
+        if is_intro:
+            # For intro: music starts, then speech begins
+            mixed = music.overlay(speech, position=FADE_DURATION_MS // 2)
+        else:
+            # For outro: speech first, then music fade out
+            mixed = speech.overlay(music, position=max(0, len(speech) - FADE_DURATION_MS))
+        
+        mixed.export(output_wav, format="wav")
+        logger.info(f"Mixed audio saved: {output_wav} ({len(mixed)/1000:.1f}s)")
+        return True
+    except Exception as e:
+        logger.error(f"Audio mixing failed: {e}")
+        # Fallback: just copy speech
+        import shutil
+        shutil.copy2(speech_wav, output_wav)
+        return False
+
+
 async def async_main():
     config = load_config()
     channels = config.get("channels", [])
@@ -490,18 +633,66 @@ async def async_main():
             logger.error("Script generation failed!")
             return
 
-        # Step 5: Render audio
+        # Step 5: Render audio with intro/outro
         os.makedirs("output", exist_ok=True)
         date_slug = podcast_date.replace(" ", "_")
         wav_path = f"output/podcast_{date_slug}.wav"
-        mp3_path = f"output/podcast_{date_slug}.mp3"
 
-        logger.info("Rendering podcast audio...")
-        success = await render_podcast_audio(script, wav_path, speaker_name, speaker_voice,
+        logger.info("Rendering podcast audio with intro/outro...")
+
+        # Generate intro TTS
+        intro_text = build_intro_text(speaker_name, podcast_date, date_range)
+        intro_tts_wav = f"output/intro_tts_{date_slug}.wav"
+        intro_mixed_wav = f"output/intro_mixed_{date_slug}.wav"
+        intro_music = get_random_music_file(INTRO_MUSIC_DIR)
+
+        logger.info("Generating intro TTS...")
+        if await generate_tts_audio(intro_text, intro_tts_wav, client, config):
+            logger.info(f"Mixing intro with music: {intro_music}")
+            mix_audio_with_music(intro_tts_wav, intro_mixed_wav, intro_music, is_intro=True)
+        else:
+            logger.error("Intro TTS failed")
+            intro_mixed_wav = None
+
+        # Generate outro TTS
+        outro_text = build_outro_text(speaker_name)
+        outro_tts_wav = f"output/outro_tts_{date_slug}.wav"
+        outro_mixed_wav = f"output/outro_mixed_{date_slug}.wav"
+        outro_music = get_random_music_file(OUTRO_MUSIC_DIR)
+
+        logger.info("Generating outro TTS...")
+        if await generate_tts_audio(outro_text, outro_tts_wav, client, config):
+            logger.info(f"Mixing outro with music: {outro_music}")
+            mix_audio_with_music(outro_tts_wav, outro_mixed_wav, outro_music, is_intro=False)
+        else:
+            logger.error("Outro TTS failed")
+            outro_mixed_wav = None
+
+        # Generate main content
+        main_wav = f"output/main_{date_slug}.wav"
+        logger.info("Rendering main content...")
+        success = await render_podcast_audio(script, main_wav, speaker_name, speaker_voice,
             corrections=config.get("pronunciation_corrections", {}))
         if not success:
             logger.error("Audio generation failed!")
             return
+
+        # Combine all parts
+        logger.info("Combining intro + main + outro...")
+        combined = AudioSegment.empty()
+        if intro_mixed_wav and os.path.exists(intro_mixed_wav):
+            combined += AudioSegment.from_wav(intro_mixed_wav)
+        combined += AudioSegment.from_wav(main_wav)
+        if outro_mixed_wav and os.path.exists(outro_mixed_wav):
+            combined += AudioSegment.from_wav(outro_mixed_wav)
+        
+        combined.export(wav_path, format="wav")
+        logger.info(f"Final WAV saved: {wav_path} ({len(combined)/1000:.1f}s)")
+
+        # Cleanup temp files
+        for f in [intro_tts_wav, intro_mixed_wav, outro_tts_wav, outro_mixed_wav, main_wav]:
+            if f and os.path.exists(f):
+                os.remove(f)
 
         # Step 6: Send WAV directly to Telegram (lameenc may fail on CI)
         logger.info("Sending to Telegram...")

@@ -4,3 +4,4 @@ telethon
 jdatetime
 google-genai
 lameenc
+pydub
