@@ -364,36 +364,23 @@ async def render_podcast_audio(script, output_wav, speaker_name, voice, correcti
 
 
 # =============================================================================
-# WAV -> MP3 conversion (ffmpeg)
+# WAV -> MP3 conversion (using ffmpeg, now available on CI)
 # =============================================================================
 
-def wav_to_mp3(wav_path, mp3_path, bitrate=64):
-    """WAV -> MP3 using lameenc (pure Python, no ffmpeg needed)."""
-    import lameenc
+def wav_to_mp3(wav_path, mp3_path, bitrate="64k"):
+    """Convert WAV to MP3 using ffmpeg (available on CI)."""
+    import subprocess
     try:
-        encoder = lameenc.Encoder()
-        encoder.set_bit_rate(bitrate)
-        encoder.set_num_channels(1)
-        encoder.set_in_sample_rate(SAMPLE_RATE)
-        encoder.set_out_sample_rate(SAMPLE_RATE)
-
-        mp3_frames = bytearray()
-        with wave.open(wav_path, "rb") as wav:
-            chunk_size = 1152  # LAME works in 1152-sample frames
-            while True:
-                frames = wav.readframes(chunk_size)
-                if not frames:
-                    break
-                # lameenc expects bytes, returns encoded bytes
-                encoded = encoder.encode(frames)
-                mp3_frames.extend(encoded)
-            # Flush remaining
-            remaining = encoder.flush()
-            mp3_frames.extend(remaining)
-
-        with open(mp3_path, "wb") as f:
-            f.write(mp3_frames)
-
+        cmd = [
+            "ffmpeg", "-y", "-i", wav_path,
+            "-codec:a", "libmp3lame", "-b:a", bitrate,
+            mp3_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            logger.error(f"ffmpeg error: {result.stderr}")
+            return False
+        
         mp3_size = os.path.getsize(mp3_path) / (1024 * 1024)
         logger.info(f"MP3 saved: {mp3_path} ({mp3_size:.1f}MB)")
         return True
@@ -412,18 +399,30 @@ def send_to_telegram(audio_path, title, caption):
     if not bot_token or not chat_id:
         logger.warning("Telegram credentials not set")
         return False
+    
+    # Convert WAV to MP3 for smaller size
+    mp3_path = audio_path.replace(".wav", ".mp3")
+    if not wav_to_mp3(audio_path, mp3_path):
+        logger.error("Failed to convert to MP3")
+        return False
+    
     url = f"https://api.telegram.org/bot{bot_token}/sendAudio"
-    with open(audio_path, "rb") as audio:
+    with open(mp3_path, "rb") as audio:
         resp = requests.post(url,
             files={"audio": audio},
             data={"chat_id": chat_id, "caption": caption[:1024], "title": title, "performer": "کوهنامه"},
             timeout=120,
         )
-        if resp.status_code == 200:
-            logger.info("Audio sent to Telegram successfully")
-            return True
-        logger.error(f"Telegram error: {resp.text}")
-        return False
+    
+    # Cleanup MP3
+    if os.path.exists(mp3_path):
+        os.remove(mp3_path)
+    
+    if resp.status_code == 200:
+        logger.info("Audio sent to Telegram successfully")
+        return True
+    logger.error(f"Telegram error: {resp.text}")
+    return False
 
 
 # =============================================================================
