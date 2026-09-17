@@ -205,31 +205,26 @@ async def generate_podcast_script(source_text, date_range, podcast_date, speaker
 
 # ساختار خروجی
 
-## آغاز (دقیقاً همین متن)
-{speaker_name}: سلام و درود خدمت شنوندگان عزیز پادکست کوهنامه. امروز {podcast_date} هست و با یه خلاصه هفتگی از پربازدیدترین مطالب کانال‌های تلگرامی کوهنوردی در خدمتتون هستیم. {date_range} رو با هم مرور می‌کنیم.
-
 ## بدنه
 برای هر خبر:
 ۱. خبر را با کلمات خودت شروع کن (کپی مستقیم از منبع نکن).
 ۲. ۲-۳ جمله جزئیات بده (چه اتفاقی افتاده، چه کسی، چرا مهم است).
-۳. اگر نکته تحلیلی یا مقایسه‌ای هست، ۱-۲ جمله اضافه کن.
+۳. اگر نکته تحلیلی یا مقایسهای هست، ۱-۲ جمله اضافه کن.
 ۴. با عبارتی متفاوت به خبر بعدی برو.
 
 قوانین محتوا:
-- مطالب هر کانال را پشت سر هم بیار (گروه‌بندی بر اساس کانال).
+- مطالب هر کانال را پشت سر هم بیار (گروهبندی بر اساس کانال).
 - بازدید هر مطلب رو به صورت طبیعی بگو (مثلاً «این پست بیشتر از ۵۰۰۰ بازدید داشته»).
 - اگر مطلبی کوتاه یا ساده است، در ۱-۲ جمله رد شو.
 - کل پادکست بین ۵ تا ۱۰ دقیقه باشد (بسته به تعداد مطالب).
 
-## پایان (دقیقاً همین متن)
-{speaker_name}: این بود خلاصه‌ی پربازدیدترین مطالب هفتگی کانال‌های کوهنوردی. امیدوارم براتون مفید بوده باشه. پادکست‌های ما رو با دوستان کوهنوردتون به اشتراک بگذارید و منتظر پادکست هفتگی بعدی باشید. تا دفعه بعد، خدا نگهدارتون باشه.
-
 # قوانین خروجی
 - فقط و فقط دیالوگ خروجی بده؛ هیچ توضیح، عنوان، یادداشت یا خلاصه اضافی ننویس.
-- هیچ نشانه‌ی مارک‌داون (ستاره، هشتگ، خط تیره، براکت) در خروجی نباشد.
+- هیچ نشانهی مارکداون (ستاره، هشتگ، خط تیره، براکت) در خروجی نباشد.
 - هر خط دقیقاً با این فرمت شروع شود:
 {speaker_name}: ...
-- از متن منبع کپی مستقیم نکن؛ همه‌چیز را با زبان طبیعی گفتاری بازنویسی کن.
+- از متن منبع کپی مستقیم نکن؛ همهچیز را با زبان طبیعی گفتاری بازنویسی کن.
+- **مهم:** متن آغاز و پایان را ننویس — این دو بخش جداگانه تولید و به ابتدا/انتها اضافه میشوند. خروجی فقط بدنه باشد (خبرها)، بدون مقدمه و بدون جمعبندی.
 """
 
     MAX_ROUNDS = 3
@@ -471,6 +466,8 @@ async def generate_tts_audio(text, output_wav, config):
     speaker_name = config.get("speaker", {}).get("name", "فرشید")
     speaker_voice = config.get("speaker", {}).get("voice", "Charon")
     
+    # Speaker labels are metadata, not words to pronounce.
+    text = re.sub(rf"^\s*{re.escape(speaker_name)}\s*:\s*", "", text)
     client = genai.Client(api_key=api_key)
     live_config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
@@ -530,50 +527,54 @@ async def generate_tts_audio(text, output_wav, config):
     return True
 
 def mix_audio_with_music(speech_wav, output_wav, music_path, is_intro=True):
-    """Mix speech with background music with fade in/out."""
-    try:
-        speech = AudioSegment.from_wav(speech_wav)
-        
-        if not music_path or not os.path.exists(music_path):
-            # No music, just export speech
-            speech.export(output_wav, format="wav")
-            logger.info(f"No music file, exported speech only: {output_wav}")
-            return True
+    """Append one complete music track AFTER speech, with no overlap.
 
-        music = AudioSegment.from_file(music_path)
-        
-        # Adjust music volume
-        music = music + MUSIC_VOLUME_DB
-        
-        # Loop music if shorter than speech + fade
-        target_duration = len(speech) + FADE_DURATION_MS
-        if len(music) < target_duration:
-            loops = (target_duration // len(music)) + 1
-            music = music * loops
-        
-        # Trim music to target duration
-        music = music[:target_duration]
-        
-        # Apply fade in/out to music
-        music = music.fade_in(FADE_DURATION_MS).fade_out(FADE_DURATION_MS)
-        
-        # Overlay speech on music (speech starts after fade-in begins)
-        if is_intro:
-            # For intro: music starts, then speech begins
-            mixed = music.overlay(speech, position=FADE_DURATION_MS // 2)
-        else:
-            # For outro: speech first, then music fade out
-            mixed = speech.overlay(music, position=max(0, len(speech) - FADE_DURATION_MS))
-        
-        mixed.export(output_wav, format="wav")
-        logger.info(f"Mixed audio saved: {output_wav} ({len(mixed)/1000:.1f}s)")
+    is_intro is retained for caller compatibility; both sections use the same order.
+    """
+    speech = AudioSegment.from_wav(speech_wav)
+    if not music_path:
+        logger.warning("Music folder is empty; exporting speech only")
+        speech.export(output_wav, format="wav")
         return True
-    except Exception as e:
-        logger.error(f"Audio mixing failed: {e}")
-        # Fallback: just copy speech
-        import shutil
-        shutil.copy2(speech_wav, output_wav)
-        return False
+
+    # A supplied but unreadable file must fail, not silently omit the music.
+    music = AudioSegment.from_file(music_path)
+    if len(music) == 0 or music.rms == 0:
+        raise ValueError(f"Empty or silent music file: {music_path}")
+    music = music.set_frame_rate(speech.frame_rate).set_channels(speech.channels).set_sample_width(speech.sample_width)
+    # Standalone music: match speech loudness rather than apply background gain.
+    target_dbfs = min(speech.dBFS, -16.0) if speech.rms else -20.0
+    gain = min(target_dbfs - music.dBFS, -1.0 - music.max_dBFS)
+    music = music.apply_gain(gain)
+    fade_ms = min(FADE_DURATION_MS, len(music) // 2)
+    if fade_ms:
+        music = music.fade_in(fade_ms).fade_out(fade_ms)
+    combined = speech + music
+    combined.export(output_wav, format="wav")
+    logger.info(f"Speech then standalone music: {music_path}; speech={len(speech)}ms, music={len(music)}ms, total={len(combined)}ms")
+    return True
+
+
+def clean_body_script(script, speaker_name):
+    """Drop known opening/closing lines if the model ignores body-only instructions."""
+    def normalized(text):
+        return re.sub(r"[\s\u200c\u200d]+", "", text).replace("ي", "ی").replace("ك", "ک")
+
+    markers = [normalized(text) for text in (
+        "سلام و درود خدمت شنوندگان", "این بود خلاصه", "خدا نگهدارتون باشه",
+    )]
+    kept = []
+    for line in script.splitlines():
+        match = re.match(rf"^\s*{re.escape(speaker_name)}\s*:\s*(.+)", line)
+        if not match:
+            continue
+        if any(marker in normalized(match.group(1)) for marker in markers):
+            logger.warning("Removed duplicate opening/closing line from body")
+            continue
+        kept.append(line.strip())
+    if not kept:
+        raise ValueError("No body dialogue remains after validation")
+    return "\n".join(kept)
 
 
 async def async_main():
@@ -673,7 +674,8 @@ async def async_main():
             logger.error("Outro TTS failed")
             outro_mixed_wav = None
 
-        # Generate main content
+        # Generate body only; opening and closing have separate audio.
+        script = clean_body_script(script, speaker_name)
         main_wav = f"output/main_{date_slug}.wav"
         logger.info("Rendering main content...")
         success = await render_podcast_audio(script, main_wav, speaker_name, speaker_voice,
@@ -712,7 +714,8 @@ async def async_main():
             f"📍 www.koohnameh.ir\n"
             f"📢 @koohnameh"
         )
-        send_to_telegram(wav_path, title, caption)
+        if not send_to_telegram(wav_path, title, caption):
+            raise RuntimeError("Telegram delivery failed; retaining WAV for diagnosis")
 
         # Step 7: Cleanup — delete audio file
         if os.path.exists(wav_path):
@@ -729,6 +732,7 @@ async def async_main():
             await client.disconnect()
         except Exception:
             pass
+        raise
 
 
 def main():
