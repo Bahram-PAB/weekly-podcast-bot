@@ -1,9 +1,9 @@
 name: Weekly Podcast Bot
 
 on:
-  schedule:
-    - cron: '30 9 * * 0'  # Every Sunday 04:30 UTC = 12:00 Tehran
-  workflow_dispatch:
+  #schedule:
+    #- cron: '30 9 * * 0'  # Every Sunday 04:30 UTC = 12:00 Tehran
+  #workflow_dispatch:
 
 jobs:
   generate-podcast:
